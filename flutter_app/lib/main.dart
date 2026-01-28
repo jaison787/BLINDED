@@ -3,6 +3,8 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:sensors_plus/sensors_plus.dart';
+import 'package:geolocator/geolocator.dart';
+
 import 'services/sms_service.dart';
 
 void main() {
@@ -15,82 +17,115 @@ class BlindedApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const MaterialApp(
-      home: FallDetectionScreen(),
+      home: SafetyScreen(),
+      debugShowCheckedModeBanner: false,
     );
   }
 }
 
-class FallDetectionScreen extends StatefulWidget {
-  const FallDetectionScreen({super.key});
+class SafetyScreen extends StatefulWidget {
+  const SafetyScreen({super.key});
 
   @override
-  State<FallDetectionScreen> createState() => _FallDetectionScreenState();
+  State<SafetyScreen> createState() => _SafetyScreenState();
 }
 
-class _FallDetectionScreenState extends State<FallDetectionScreen> {
+class _SafetyScreenState extends State<SafetyScreen> {
   final SmsService sms = SmsService();
 
   StreamSubscription? _accelSub;
-  DateTime? _lastFallTime;
-  DateTime? _impactTime;
+  StreamSubscription? _gyroSub;
 
-  // ---- TUNABLE VALUES ----
-  static const double IMPACT_THRESHOLD = 12.0;
+  double _gyroMag = 0.0;
+  DateTime? _impactTime;
+  DateTime? _lastAlertTime;
+
+  // ===== TUNABLE VALUES =====
+  static const double ACC_IMPACT_THRESHOLD = 2.0;
+  static const double GYRO_THRESHOLD = 2.5;
   static const double STILLNESS_THRESHOLD = 2.0;
-  static const int STILLNESS_SECONDS = 3;
-  static const int COOLDOWN_SECONDS = 3;
+
+  static const int STILLNESS_SECONDS = 2;
+  static const int COOLDOWN_SECONDS = 10;
+
+  final List<String> emergencyContacts = [
+    "+919994235648", // replace
+  ];
 
   @override
   void initState() {
     super.initState();
-    _startFallDetection();
+    _startSensors();
   }
 
-  void _startFallDetection() {
-    _accelSub = accelerometerEvents.listen((event) async {
-      final magnitude = sqrt(
-        event.x * event.x +
-        event.y * event.y +
-        event.z * event.z,
-      );
+  // ===== SENSOR FUSION =====
+  void _startSensors() {
+    _gyroSub = gyroscopeEvents.listen((g) {
+      _gyroMag = sqrt(g.x * g.x + g.y * g.y + g.z * g.z);
+    });
 
-      // Detect impact
-      if (magnitude > IMPACT_THRESHOLD) {
+    _accelSub = accelerometerEvents.listen((a) async {
+      final accMag = sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
+
+      if (accMag > ACC_IMPACT_THRESHOLD && _gyroMag > GYRO_THRESHOLD) {
         _impactTime = DateTime.now();
       }
 
-      // Detect stillness after impact
-      if (_impactTime != null && magnitude < STILLNESS_THRESHOLD) {
+      if (_impactTime != null && accMag < STILLNESS_THRESHOLD) {
         final now = DateTime.now();
 
-        if (now.difference(_impactTime!).inSeconds >= STILLNESS_SECONDS) {
-          if (_canSendAlert(now)) {
-            _lastFallTime = now;
-            _impactTime = null;
-
-            await _sendEmergencySms();
-          }
+        if (now.difference(_impactTime!).inSeconds >= STILLNESS_SECONDS &&
+            _canSendAlert(now)) {
+          _impactTime = null;
+          _lastAlertTime = now;
+          await _sendEmergencySms(reason: "Fall detected");
         }
       }
     });
   }
 
   bool _canSendAlert(DateTime now) {
-    if (_lastFallTime == null) return true;
-    return now.difference(_lastFallTime!).inSeconds > COOLDOWN_SECONDS;
+    if (_lastAlertTime == null) return true;
+    return now.difference(_lastAlertTime!).inSeconds > COOLDOWN_SECONDS;
   }
 
-  Future<void> _sendEmergencySms() async {
-    const message =
-        "🚨 EMERGENCY ALERT\nFall detected.\nPlease check immediately.";
+  // ===== GPS SAFE (NEVER BLOCKS SMS) =====
+  Future<String> _getLocationLinkSafe() async {
+    try {
+      final pos = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      ).timeout(const Duration(seconds: 5));
 
-    const contacts = [
-      "+918078923590", // replace
-      "+917012966766", // replace
-    ];
+      return "https://maps.google.com/?q=${pos.latitude},${pos.longitude}";
+    } catch (_) {
+      return "Location unavailable";
+    }
+  }
 
-    for (final number in contacts) {
-      await sms.sendSms(number, message);
+  // ===== EMERGENCY SMS (SMS FIRST, GPS AFTER) =====
+  Future<void> _sendEmergencySms({required String reason}) async {
+    debugPrint(">>> EMERGENCY SMS FUNCTION CALLED <<<");
+
+    // 1️⃣ SEND SMS IMMEDIATELY
+    final firstMsg =
+        "🚨 EMERGENCY ALERT\n"
+        "$reason.\n"
+        "Location: fetching...";
+
+    for (final n in emergencyContacts) {
+      await sms.sendSms(n, firstMsg);
+      await Future.delayed(const Duration(seconds: 2));
+    }
+
+    // 2️⃣ TRY GPS AND SEND UPDATE
+    final locationLink = await _getLocationLinkSafe();
+
+    final secondMsg =
+        "📍 LOCATION UPDATE\n"
+        "$locationLink";
+
+    for (final n in emergencyContacts) {
+      await sms.sendSms(n, secondMsg);
       await Future.delayed(const Duration(seconds: 2));
     }
 
@@ -104,22 +139,55 @@ class _FallDetectionScreenState extends State<FallDetectionScreen> {
     );
   }
 
+  // ===== MANUAL SOS =====
+  void _manualSOS() async {
+    if (_canSendAlert(DateTime.now())) {
+      _lastAlertTime = DateTime.now();
+      await _sendEmergencySms(reason: "Manual SOS triggered");
+    }
+  }
+
   @override
   void dispose() {
     _accelSub?.cancel();
+    _gyroSub?.cancel();
     super.dispose();
   }
 
+  // ===== UI =====
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("BLINDED – Fall Detection"),
+        title: const Text("BLINDED – Safety Active"),
       ),
-      body: const Center(
-        child: Text(
-          "Fall detection is ACTIVE",
-          style: TextStyle(fontSize: 20),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text(
+              "Fall detection is ACTIVE",
+              style: TextStyle(fontSize: 20),
+            ),
+            const SizedBox(height: 40),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 40,
+                  vertical: 20,
+                ),
+              ),
+              onPressed: _manualSOS,
+              child: const Text(
+                "SOS",
+                style: TextStyle(
+                  fontSize: 24,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
