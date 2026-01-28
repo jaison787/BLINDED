@@ -1,235 +1,533 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:camera/camera.dart';
-import '../../providers/navigation_provider.dart';
-import 'widgets/detection_overlay.dart';
-import 'widgets/audio_indicator.dart';
+import 'dart:ui' as ui;
+import '../../services/mlkit_service.dart';
+import '../../services/detection_filter.dart';
+import '../../services/camera_service.dart';
+import '../../models/detected_object.dart';
 
-class CameraScreen extends ConsumerStatefulWidget {
+class CameraScreen extends StatefulWidget {
   const CameraScreen({Key? key}) : super(key: key);
 
   @override
-  ConsumerState<CameraScreen> createState() => _CameraScreenState();
+  State<CameraScreen> createState() => _CameraScreenState();
 }
 
-class _CameraScreenState extends ConsumerState<CameraScreen> {
-  bool _isStarted = false;
+class _CameraScreenState extends State<CameraScreen> {
+  final MLKitService _mlKitService = MLKitService();
+  final CameraService _cameraService = CameraService();
+  
+  bool _isProcessing = false;
+  String _currentInstruction = 'Initializing...';
+  List<DetectedObject> _detectedObjects = [];
+  Size? _imageSize;
 
   @override
   void initState() {
     super.initState();
-    // Auto-start navigation when screen loads
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _startNavigation();
-    });
+    _initialize();
   }
 
-  Future<void> _startNavigation() async {
-    debugPrint('[CameraScreen] Starting navigation...');
+  Future<void> _initialize() async {
     try {
-      await ref.read(navigationProvider).startNavigation();
-      if (mounted) {
+      // Initialize ML Kit
+      await _mlKitService.initialize();
+      
+      // Initialize camera
+      await _cameraService.initialize();
+      
+      // Start detection
+      await _cameraService.startImageStream(_onCameraImage);
+      
+      setState(() {
+        _currentInstruction = 'Ready. Point camera forward.';
+      });
+    } catch (e) {
+      debugPrint('❌ Initialization error: $e');
+      setState(() {
+        _currentInstruction = 'Error: $e';
+      });
+    }
+  }
+
+  void _onCameraImage(CameraImage image) async {
+    if (_isProcessing) return;
+    
+    _isProcessing = true;
+
+    try {
+      // Store image size for scaling bounding boxes
+      _imageSize = Size(image.width.toDouble(), image.height.toDouble());
+      
+      // Detect objects
+      final objects = await _mlKitService.detectObjects(
+        image,
+        _cameraService.currentCamera!,
+      );
+
+      // Update detected objects for drawing
+      setState(() {
+        _detectedObjects = objects;
+      });
+
+      // Filter and create instruction
+      if (objects.isNotEmpty) {
+        debugPrint('\n📊 DETECTION SUMMARY:');
+        debugPrint('Total objects: ${objects.length}');
+        
+        final instruction = DetectionFilter.createCombinedInstruction(objects);
+        
+        if (instruction != null) {
+          setState(() {
+            _currentInstruction = instruction.message;
+          });
+          
+          debugPrint('🗣️ Instruction: ${instruction.message}');
+        }
+      } else {
         setState(() {
-          _isStarted = true;
+          _currentInstruction = 'Scanning...';
         });
       }
-      debugPrint('[CameraScreen] Navigation started successfully');
     } catch (e) {
-      debugPrint('[CameraScreen] Failed to start navigation: $e');
+      debugPrint('❌ Processing error: $e');
+    } finally {
+      _isProcessing = false;
     }
-  }
-
-  Future<void> _stopNavigation() async {
-    await ref.read(navigationProvider).stopNavigation();
-    if (mounted) {
-      Navigator.pop(context);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final navProvider = ref.watch(navigationProvider);
-    final cameraController = navProvider.cameraService.controller;
-
-    return PopScope(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, result) async {
-        if (!didPop) {
-          await _stopNavigation();
-        }
-      },
-      child: Scaffold(
-        backgroundColor: Colors.black,
-        body: Stack(
-          children: [
-            // Camera Preview
-            if (cameraController != null &&
-                cameraController.value.isInitialized)
-              Center(
-                child: CameraPreview(cameraController),
-              )
-            else if (navProvider.statusMessage.contains('failed'))
-              Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.error, color: Colors.red, size: 48),
-                    const SizedBox(height: 16),
-                    Text(
-                      navProvider.statusMessage,
-                      style: const TextStyle(color: Colors.white),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 16),
-                    ElevatedButton(
-                      onPressed: _startNavigation,
-                      child: const Text('Retry'),
-                    ),
-                  ],
-                ),
-              )
-            else
-              const Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    CircularProgressIndicator(),
-                    SizedBox(height: 16),
-                    Text(
-                      'Initializing camera...',
-                      style: TextStyle(color: Colors.white70),
-                    ),
-                  ],
-                ),
-              ),
-
-            // Detection Overlay
-            if (_isStarted && navProvider.detectedObjects.isNotEmpty)
-              DetectionOverlay(
-                objects: navProvider.detectedObjects,
-                imageSize: navProvider.lastImageSize,
-              ),
-
-            // Audio Indicator
-            Positioned(
-              top: 60,
-              left: 0,
-              right: 0,
-              child: AudioIndicator(
-                instruction: navProvider.currentInstruction,
-              ),
-            ),
-
-            // Control Panel
-            Positioned(
-              bottom: 0,
-              left: 0,
-              right: 0,
-              child: Container(
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.bottomCenter,
-                    end: Alignment.topCenter,
-                    colors: [
-                      Colors.black.withOpacity(0.8),
-                      Colors.transparent,
-                    ],
-                  ),
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // Object Count
-                    if (navProvider.detectedObjects.isNotEmpty)
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 8,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.2),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Text(
-                          '${navProvider.detectedObjects.length} object${navProvider.detectedObjects.length > 1 ? 's' : ''} detected',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    const SizedBox(height: 16),
-
-                    // Stop Button
-                    SizedBox(
-                      width: double.infinity,
-                      height: 60,
-                      child: ElevatedButton(
-                        onPressed: _stopNavigation,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.red,
-                        ),
-                        child: const Text(
-                          'Stop Navigation',
-                          style: TextStyle(fontSize: 18),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-            // Status overlay (top)
-            Positioned(
-              top: MediaQuery.of(context).padding.top + 16,
-              left: 16,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 8,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.6),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        color: navProvider.isNavigating
-                            ? Colors.green
-                            : Colors.red,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      navProvider.isNavigating ? 'Navigating' : 'Stopped',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 
   @override
   void dispose() {
-    if (_isStarted) {
-      ref.read(navigationProvider).stopNavigation();
-    }
+    _cameraService.dispose();
+    _mlKitService.dispose();
     super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_cameraService.isInitialized) {
+      return Scaffold(
+        backgroundColor: Colors.black,
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const CircularProgressIndicator(color: Colors.white),
+              const SizedBox(height: 16),
+              Text(
+                _currentInstruction,
+                style: const TextStyle(color: Colors.white),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+        title: const Text('Object Detection'),
+        elevation: 0,
+      ),
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          // Camera preview
+          CameraPreview(_cameraService.controller!),
+          
+          // Bounding box overlay
+          if (_imageSize != null)
+            CustomPaint(
+              painter: BoundingBoxPainter(
+                objects: _detectedObjects,
+                imageSize: _imageSize!,
+                previewSize: MediaQuery.of(context).size,
+              ),
+            ),
+          
+          // Object count badge
+          Positioned(
+            top: 16,
+            right: 16,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.7),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: Colors.white24),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.visibility, color: Colors.white, size: 16),
+                  const SizedBox(width: 6),
+                  Text(
+                    '${_detectedObjects.length} objects',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          
+          // Bottom instruction panel
+          Positioned(
+            bottom: 0,
+            left: 0,
+            right: 0,
+            child: Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.bottomCenter,
+                  end: Alignment.topCenter,
+                  colors: [
+                    Colors.black.withOpacity(0.9),
+                    Colors.black.withOpacity(0.7),
+                    Colors.transparent,
+                  ],
+                ),
+              ),
+              child: SafeArea(
+                top: false,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Detected objects list
+                    if (_detectedObjects.isNotEmpty) ...[
+                      const Text(
+                        'DETECTED:',
+                        style: TextStyle(
+                          color: Colors.white70,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1.2,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 6,
+                        children: _detectedObjects.take(5).map((obj) {
+                          return _buildObjectChip(obj);
+                        }).toList(),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                    
+                    // Main instruction
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: _getInstructionColor().withOpacity(0.3),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: _getInstructionColor(),
+                          width: 2,
+                        ),
+                      ),
+                      child: Text(
+                        _currentInstruction,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildObjectChip(DetectedObject obj) {
+    final color = _getColorForObject(obj);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.2),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color, width: 1.5),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            _getIconForLabel(obj.label),
+            color: color,
+            size: 14,
+          ),
+          const SizedBox(width: 4),
+          Text(
+            '${obj.label} ${obj.distance.toStringAsFixed(1)}m',
+            style: TextStyle(
+              color: color,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Color _getInstructionColor() {
+    if (_currentInstruction.contains('STOP') || 
+        _currentInstruction.contains('STAIRS') ||
+        _currentInstruction.contains('OBSTACLE')) {
+      return Colors.red;
+    } else if (_currentInstruction.contains('Door')) {
+      return Colors.green;
+    } else if (_detectedObjects.any((obj) => obj.isWarning)) {
+      return Colors.orange;
+    }
+    return Colors.blue;
+  }
+
+  Color _getColorForObject(DetectedObject obj) {
+    if (obj.isCritical) return Colors.red;
+    if (obj.isWarning) return Colors.orange;
+    if (obj.label == 'Door') return Colors.green;
+    if (obj.label == 'Stairs') return Colors.red;
+    if (obj.label == 'Person') return Colors.cyan;
+    return Colors.yellow;
+  }
+
+  IconData _getIconForLabel(String label) {
+    switch (label.toLowerCase()) {
+      case 'door':
+        return Icons.door_front_door;
+      case 'stairs':
+        return Icons.stairs;
+      case 'person':
+        return Icons.person;
+      case 'chair':
+        return Icons.chair;
+      case 'table':
+        return Icons.table_restaurant;
+      case 'couch':
+      case 'sofa':
+        return Icons.weekend;
+      case 'bed':
+        return Icons.bed;
+      default:
+        return Icons.crop_square;
+    }
+  }
+}
+
+/// Custom painter to draw bounding boxes around detected objects
+class BoundingBoxPainter extends CustomPainter {
+  final List<DetectedObject> objects;
+  final Size imageSize;
+  final Size previewSize;
+
+  BoundingBoxPainter({
+    required this.objects,
+    required this.imageSize,
+    required this.previewSize,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (final obj in objects) {
+      final color = _getColorForObject(obj);
+      
+      // Scale bounding box from image coordinates to screen coordinates
+      final scaleX = size.width / imageSize.width;
+      final scaleY = size.height / imageSize.height;
+      
+      final scaledRect = Rect.fromLTRB(
+        obj.boundingBox.left * scaleX,
+        obj.boundingBox.top * scaleY,
+        obj.boundingBox.right * scaleX,
+        obj.boundingBox.bottom * scaleY,
+      );
+
+      // Draw bounding box
+      final boxPaint = Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3.0;
+
+      // Draw rounded rectangle for the box
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(scaledRect, const Radius.circular(8)),
+        boxPaint,
+      );
+
+      // Draw corner accents (thicker lines at corners)
+      final cornerLength = 20.0;
+      final cornerPaint = Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 5.0
+        ..strokeCap = StrokeCap.round;
+
+      // Top-left corner
+      canvas.drawLine(
+        Offset(scaledRect.left, scaledRect.top + cornerLength),
+        Offset(scaledRect.left, scaledRect.top),
+        cornerPaint,
+      );
+      canvas.drawLine(
+        Offset(scaledRect.left, scaledRect.top),
+        Offset(scaledRect.left + cornerLength, scaledRect.top),
+        cornerPaint,
+      );
+
+      // Top-right corner
+      canvas.drawLine(
+        Offset(scaledRect.right - cornerLength, scaledRect.top),
+        Offset(scaledRect.right, scaledRect.top),
+        cornerPaint,
+      );
+      canvas.drawLine(
+        Offset(scaledRect.right, scaledRect.top),
+        Offset(scaledRect.right, scaledRect.top + cornerLength),
+        cornerPaint,
+      );
+
+      // Bottom-left corner
+      canvas.drawLine(
+        Offset(scaledRect.left, scaledRect.bottom - cornerLength),
+        Offset(scaledRect.left, scaledRect.bottom),
+        cornerPaint,
+      );
+      canvas.drawLine(
+        Offset(scaledRect.left, scaledRect.bottom),
+        Offset(scaledRect.left + cornerLength, scaledRect.bottom),
+        cornerPaint,
+      );
+
+      // Bottom-right corner
+      canvas.drawLine(
+        Offset(scaledRect.right - cornerLength, scaledRect.bottom),
+        Offset(scaledRect.right, scaledRect.bottom),
+        cornerPaint,
+      );
+      canvas.drawLine(
+        Offset(scaledRect.right, scaledRect.bottom),
+        Offset(scaledRect.right, scaledRect.bottom - cornerLength),
+        cornerPaint,
+      );
+
+      // Draw label background
+      final labelText = '${obj.label} ${(obj.confidence * 100).toInt()}%';
+      final textSpan = TextSpan(
+        text: labelText,
+        style: TextStyle(
+          color: Colors.white,
+          fontSize: 14,
+          fontWeight: FontWeight.bold,
+          shadows: [
+            Shadow(
+              color: Colors.black,
+              blurRadius: 2,
+            ),
+          ],
+        ),
+      );
+      
+      final textPainter = TextPainter(
+        text: textSpan,
+        textDirection: ui.TextDirection.ltr,
+      );
+      textPainter.layout();
+
+      // Label background
+      final labelBgRect = RRect.fromRectAndRadius(
+        Rect.fromLTWH(
+          scaledRect.left,
+          scaledRect.top - textPainter.height - 8,
+          textPainter.width + 16,
+          textPainter.height + 8,
+        ),
+        const Radius.circular(6),
+      );
+
+      final labelBgPaint = Paint()
+        ..color = color.withOpacity(0.85)
+        ..style = PaintingStyle.fill;
+
+      canvas.drawRRect(labelBgRect, labelBgPaint);
+
+      // Draw label text
+      textPainter.paint(
+        canvas,
+        Offset(scaledRect.left + 8, scaledRect.top - textPainter.height - 4),
+      );
+
+      // Draw distance badge
+      final distanceText = '${obj.distance.toStringAsFixed(1)}m';
+      final distanceSpan = TextSpan(
+        text: distanceText,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 12,
+          fontWeight: FontWeight.bold,
+        ),
+      );
+      
+      final distancePainter = TextPainter(
+        text: distanceSpan,
+        textDirection: ui.TextDirection.ltr,
+      );
+      distancePainter.layout();
+
+      // Distance background (bottom right of box)
+      final distanceBgRect = RRect.fromRectAndRadius(
+        Rect.fromLTWH(
+          scaledRect.right - distancePainter.width - 12,
+          scaledRect.bottom + 4,
+          distancePainter.width + 12,
+          distancePainter.height + 6,
+        ),
+        const Radius.circular(4),
+      );
+
+      final distanceBgPaint = Paint()
+        ..color = Colors.black.withOpacity(0.7)
+        ..style = PaintingStyle.fill;
+
+      canvas.drawRRect(distanceBgRect, distanceBgPaint);
+
+      distancePainter.paint(
+        canvas,
+        Offset(
+          scaledRect.right - distancePainter.width - 6,
+          scaledRect.bottom + 7,
+        ),
+      );
+    }
+  }
+
+  Color _getColorForObject(DetectedObject obj) {
+    if (obj.isCritical) return Colors.red;
+    if (obj.isWarning) return Colors.orange;
+    if (obj.label == 'Door') return Colors.green;
+    if (obj.label == 'Stairs') return Colors.red;
+    if (obj.label == 'Person') return Colors.cyan;
+    return Colors.yellow;
+  }
+
+  @override
+  bool shouldRepaint(BoundingBoxPainter oldDelegate) {
+    return objects != oldDelegate.objects;
   }
 }

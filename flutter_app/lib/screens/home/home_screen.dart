@@ -5,6 +5,7 @@ import '../../providers/navigation_provider.dart';
 import '../camera/camera_screen.dart';
 import '../settings/settings_screen.dart';
 import '../tutorial/tutorial_screen.dart';
+import '../../services/sms_service.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -165,6 +166,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     ),
                   ),
                   child: const Text('How to Use'),
+                ),
+              ),
+              const SizedBox(height: 16),
+              
+              // Test SMS Button
+              SizedBox(
+                width: double.infinity,
+                height: 60,
+                child: TextButton(
+                  onPressed: () async {
+                    final sms = SmsService();
+
+                    await sms.sendSms(
+                      "+918078923590", // your number
+                      "TEST: SmsManager working",
+                    );
+
+                  },
+                  child: const Text('Test SMS (Dev)'),
                 ),
               ),
 

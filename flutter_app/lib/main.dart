@@ -1,23 +1,59 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'core/theme/app_theme.dart';
-import 'screens/home/home_screen.dart';
+import 'services/sms_service.dart';
 
 void main() {
-  WidgetsFlutterBinding.ensureInitialized();
-  runApp(const ProviderScope(child: IndoorNavApp()));
+  runApp(const IndoorNavApp());
 }
 
 class IndoorNavApp extends StatelessWidget {
-  const IndoorNavApp({Key? key}) : super(key: key);
+  const IndoorNavApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Indoor Navigation',
-      theme: AppTheme.darkTheme,
-      debugShowCheckedModeBanner: false,
-      home: const HomeScreen(),
+    return const MaterialApp(
+      home: HomeScreen(),
+    );
+  }
+}
+
+class HomeScreen extends StatelessWidget {
+  const HomeScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final sms = SmsService();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('SMS Test'),
+      ),
+      body: Center(
+        child: ElevatedButton(
+          onPressed: () async {
+            bool success = true;
+
+            try {
+              await sms.sendSms(
+                "+918078923590", // 👈 replace with your number
+                "TEST: SmsManager working",
+              );
+            } catch (e) {
+              success = false;
+            }
+
+            if (!context.mounted) return;
+
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(success ? 'SMS Sent!' : 'SMS Failed'),
+                backgroundColor:
+                    success ? Colors.green : Colors.red,
+              ),
+            );
+          },
+          child: const Text('SEND TEST SMS'),
+        ),
+      ),
     );
   }
 }

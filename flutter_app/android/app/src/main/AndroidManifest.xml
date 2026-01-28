@@ -1,7 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- Silent SMS requires this dangerous permission (runtime grant needed) -->
+  <uses-permission android:name="android.permission.SEND_SMS" />
+  <!-- Optional but recommended for SIM/SMS routing in some devices -->
+  <uses-permission android:name="android.permission.READ_PHONE_STATE" />
 
     <!-- Camera permission for object detection -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-feature android:name="android.hardware.camera" android:required="true" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
